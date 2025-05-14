@@ -26,7 +26,6 @@ pub fn Array2D(comptime T: type) type {
             OutOfBounds, // copy window to large
             IOError,
             InvalidFileFormat,
-            EndOfStream,
         };
 
         const FILE_MAGIC = "A2D";
@@ -139,7 +138,7 @@ pub fn Array2D(comptime T: type) type {
 
         // get the flat index from and x and y
         pub fn flatFromDataAddress(self: *const Self, x: usize, y: usize) ?usize {
-            if (self.height < y or self.width < x) {
+            if (y >= self.height or x >= self.width) {
                 return null;
             }
             return (y * self.width) + x;
@@ -294,7 +293,7 @@ pub fn Array2D(comptime T: type) type {
             self.items = new_buffers.items;
         }
         // flips rows and columns
-        pub fn transpose(self: *Self, allocator: Allocator) !Self {
+        pub fn transpose(self: *const Self, allocator: Allocator) !Self {
             var result = try Self.init(allocator, self.height, self.width);
             errdefer result.deinit();
 
@@ -307,7 +306,7 @@ pub fn Array2D(comptime T: type) type {
             return result;
         }
         // Rotates the array 90 degrees clockwise
-        pub fn rotateClockwise(self: *Self, allocator: Allocator) !Self {
+        pub fn rotateClockwise(self: *const Self, allocator: Allocator) !Self {
             var result = try Self.init(allocator, self.height, self.width);
             errdefer result.deinit();
 
@@ -320,7 +319,7 @@ pub fn Array2D(comptime T: type) type {
             return result;
         }
         // Flips the array horizontally (mirror along vertical axis)
-        pub fn flipHorizontal(self: *Self, allocator: Allocator) !Self {
+        pub fn flipHorizontal(self: *const Self, allocator: Allocator) !Self {
             var result = try Self.init(allocator, self.width, self.height);
             errdefer result.deinit();
 
@@ -333,7 +332,7 @@ pub fn Array2D(comptime T: type) type {
             return result;
         }
         // Flips the array vertically (mirror along horizontal axis)
-        pub fn flipVertical(self: *Self, allocator: Allocator) !Self {
+        pub fn flipVertical(self: *const Self, allocator: Allocator) !Self {
             var result = try Self.init(allocator, self.width, self.height);
             errdefer result.deinit();
 
@@ -434,12 +433,11 @@ pub fn Array2D(comptime T: type) type {
                 single: bool, // If true, only iterate one row/column
 
                 pub fn next(it: *PosIter) ?struct { ptr: ptr_type, x: usize, y: usize } {
-                    nx_mode: switch (it.mode) {
+                    switch (it.mode) {
                         .Flat => {
                             //how did you even get here?
                             std.debug.print("Warn: Flat iterator used for postions data. Use nonpostion iterator for speed or swich to row mode\n", .{});
-                            std.debug.print("Automatically changing to Row mode to prevent undefined behavior\n", .{});
-                            continue :nx_mode .Row;
+                            unreachable;
                         },
                         .Row => {
                             // If we're past the end of the array, we're done
@@ -517,18 +515,21 @@ pub fn Array2D(comptime T: type) type {
 
             if (mode == .Flat) {
                 if (single) {
+                    // not really needed but consistant
                     std.debug.print("Warn: Single Mode and Flat iterator redundant\n", .{});
-                    std.debug.print("Disableing Single Mode\n", .{});
+                    std.debug.print("Disabling Single Mode\n", .{});
                     single = false;
                 }
 
                 if (options.include_pos) {
+                    // will crash if not corrected
                     std.debug.print("Warn: Flat iterator incompatable with position iterator\n", .{});
                     std.debug.print("Swaping to Row mode\n", .{});
                     mode = .Row;
                 }
 
                 if (start.col != 0 or start.row != 0) {
+                    //could change but no
                     std.debug.print("Warn: Flat iterator incompatable with position offset\n", .{});
                     std.debug.print("Iteration will start at first item\n", .{});
                     start = .{ .col = 0, .row = 0 };
