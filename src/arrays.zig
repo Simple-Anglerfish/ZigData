@@ -208,7 +208,7 @@ pub fn Array2D(comptime T: type) type {
 
         //---------- Mapping Functions ------------
         // TODO test to see if const pointers break this
-        
+
         // passes cordinates to function use transform if x and y not needed
         pub fn map(self: anytype, func: fn (*T, usize, usize) void) void {
             var y: usize = 0;
@@ -265,26 +265,37 @@ pub fn Array2D(comptime T: type) type {
         //---------- Array Manipulation ------------
         // will crop to top left if new array is smaller
         pub fn resize(self: *Self, new_width: usize, new_height: usize) !void {
-            const result = try Self._allocInternal(self.allocator, new_width, new_height);
-            errdefer {
-                self.allocator.free(result.data);
-                self.allocator.free(result.items);
+
+            // nothing to do
+            if (new_width == self.width and new_height == self.height) {
+                return;
             }
 
-            const minWidth = @min(self.width, new_width);
-            const minHeight = @min(self.height, new_height);
+            const new_buffers = try Self._allocInternal(self.allocator, new_width, new_height);
+            errdefer {
+                self.allocator.free(new_buffers.data);
+                self.allocator.free(new_buffers.items);
+            }
 
-            for (0..minHeight) |y| {
-                @memcpy(result.items[y][0..minWidth], self.items[y][0..minWidth]);
+            const old_width = self.width;
+            const old_height = self.height;
+
+            const min_width = @min(old_width, new_width);
+            const min_height = @min(old_height, new_height);
+
+            for (0..min_height) |y| {
+                @memcpy(new_buffers.items[y][0..min_width], self.items[y][0..min_width]);
             }
 
             self._deallocInternal();
-
-            self = result;
+            self.height = new_height;
+            self.width = new_width;
+            self.data = new_buffers.data;
+            self.items = new_buffers.items;
         }
         // flips rows and columns
-        pub fn transpose(self: *Self) !Self {
-            var result = try Self.init(self.allocator, self.height, self.width);
+        pub fn transpose(self: *Self, allocator: Allocator) !Self {
+            var result = try Self.init(allocator, self.height, self.width);
             errdefer result.deinit();
 
             for (0..self.height) |y| {
@@ -296,8 +307,8 @@ pub fn Array2D(comptime T: type) type {
             return result;
         }
         // Rotates the array 90 degrees clockwise
-        pub fn rotateClockwise(self: *Self) !Self {
-            var result = try Self.init(self.allocator, self.height, self.width);
+        pub fn rotateClockwise(self: *Self, allocator: Allocator) !Self {
+            var result = try Self.init(allocator, self.height, self.width);
             errdefer result.deinit();
 
             for (0..self.height) |y| {
@@ -309,8 +320,8 @@ pub fn Array2D(comptime T: type) type {
             return result;
         }
         // Flips the array horizontally (mirror along vertical axis)
-        pub fn flipHorizontal(self: *Self) !Self {
-            var result = try Self.init(self.allocator, self.width, self.height);
+        pub fn flipHorizontal(self: *Self, allocator: Allocator) !Self {
+            var result = try Self.init(allocator, self.width, self.height);
             errdefer result.deinit();
 
             for (0..self.height) |y| {
@@ -322,8 +333,8 @@ pub fn Array2D(comptime T: type) type {
             return result;
         }
         // Flips the array vertically (mirror along horizontal axis)
-        pub fn flipVertical(self: *Self) !Self {
-            var result = try Self.init(self.allocator, self.width, self.height);
+        pub fn flipVertical(self: *Self, allocator: Allocator) !Self {
+            var result = try Self.init(allocator, self.width, self.height);
             errdefer result.deinit();
 
             for (0..self.height) |y| {
@@ -333,7 +344,7 @@ pub fn Array2D(comptime T: type) type {
             return result;
         }
 
-        //--------- Iterators ---------
+        //---------- Iterators ---------
 
         // Define iteration modes
         const IterMode = enum {
@@ -420,13 +431,15 @@ pub fn Array2D(comptime T: type) type {
                 mode: IterMode,
                 row: usize, // Current row or fixed row for single row mode
                 col: usize, // Current column or fixed column for single column mode
-                idx: usize = 0,
                 single: bool, // If true, only iterate one row/column
 
                 pub fn next(it: *PosIter) ?struct { ptr: ptr_type, x: usize, y: usize } {
-                    switch (it.mode) {
+                    nx_mode: switch (it.mode) {
                         .Flat => {
-                            unreachable;
+                            //how did you even get here?
+                            std.debug.print("Warn: Flat iterator used for postions data. Use nonpostion iterator for speed or swich to row mode\n", .{});
+                            std.debug.print("Automatically changing to Row mode to prevent undefined behavior\n", .{});
+                            continue :nx_mode .Row;
                         },
                         .Row => {
                             // If we're past the end of the array, we're done
