@@ -335,45 +335,221 @@ pub fn Array2D(comptime T: type) type {
 
         //--------- Iterators ---------
 
-        fn _iterGen(comptime is_const: bool) type {
+        // Define iteration modes
+        const IterMode = enum {
+            Flat, // Simple flat iteration through all elements
+            Row, // Iterate through elements row by row
+            Column, // Iterate through elements column by column
+        };
+
+        // Basic iterator (returns pointers to elements)
+        fn _BasicIterGen(comptime is_const: bool) type {
             const ptr_type = if (is_const) *const T else *T;
             const SelfPtr = if (is_const) *const Self else *Self;
+
             return struct {
-                const Iter_impl = @This();
+                const Iter = @This();
+
                 array: SelfPtr,
-                idx: usize,
-                pub fn next(it: *Iter_impl) ?ptr_type {
-                    if (it.index >= it.array.data.len) return null;
-                    const prt = &it.array.data[it.idx];
-                    it.idx += 1;
-                    return prt;
+                mode: IterMode,
+                row: usize, // Current row or fixed row for single row mode
+                col: usize, // Current column or fixed column for single column mode
+                idx: usize = 0, // For flat iteration
+                single: bool, // If true, only iterate one row/column
+
+                pub fn next(it: *Iter) ?ptr_type {
+                    switch (it.mode) {
+                        .Flat => {
+                            if (it.idx >= it.array.data.len) return null;
+
+                            const ptr = &it.array.data[it.idx];
+
+                            // Move to next position
+                            it.idx += 1;
+                            return ptr;
+                        },
+                        .Row => {
+                            // If we're past the end of the array, we're done
+                            if (it.row >= it.array.height) return null;
+
+                            // If we're past the end of the current row
+                            if (it.col >= it.array.width) {
+                                if (it.single) return null; // In single mode, we're done
+
+                                // Move to next row
+                                it.col = 0;
+                                it.row += 1;
+                                if (it.row >= it.array.height) return null;
+                            }
+
+                            const ptr = &it.array.items[it.row][it.col];
+                            it.col += 1;
+                            return ptr;
+                        },
+                        .Column => {
+                            // If we're past the end of the array, we're done
+                            if (it.col >= it.array.width) return null;
+
+                            // If we're past the end of the current column
+                            if (it.row >= it.array.height) {
+                                if (it.single) return null; // In single mode, we're done
+
+                                // Move to next column
+                                it.row = 0;
+                                it.col += 1;
+                                if (it.col >= it.array.width) return null;
+                            }
+
+                            const ptr = &it.array.items[it.row][it.col];
+                            it.row += 1;
+                            return ptr;
+                        },
+                    }
+                }
+            };
+        }
+        // Position-tracking iterator (returns pointers and positions)
+        fn _PosIterGen(comptime is_const: bool) type {
+            const ptr_type = if (is_const) *const T else *T;
+            const SelfPtr = if (is_const) *const Self else *Self;
+
+            return struct {
+                const PosIter = @This();
+
+                array: SelfPtr,
+                mode: IterMode,
+                row: usize, // Current row or fixed row for single row mode
+                col: usize, // Current column or fixed column for single column mode
+                idx: usize = 0,
+                single: bool, // If true, only iterate one row/column
+
+                pub fn next(it: *PosIter) ?struct { ptr: ptr_type, x: usize, y: usize } {
+                    switch (it.mode) {
+                        .Flat => {
+                            unreachable;
+                        },
+                        .Row => {
+                            // If we're past the end of the array, we're done
+                            if (it.row >= it.array.height) return null;
+
+                            // If we're past the end of the current row
+                            if (it.col >= it.array.width) {
+                                if (it.single) return null; // In single mode, we're done
+
+                                // Move to next row
+                                it.col = 0;
+                                it.row += 1;
+                                if (it.row >= it.array.height) return null;
+                            }
+
+                            const ptr = &it.array.items[it.row][it.col];
+                            const result = .{ .ptr = ptr, .x = it.col, .y = it.row };
+                            it.col += 1;
+                            return result;
+                        },
+                        .Column => {
+                            // If we're past the end of the array, we're done
+                            if (it.col >= it.array.width) return null;
+
+                            // If we're past the end of the current column
+                            if (it.row >= it.array.height) {
+                                if (it.single) return null; // In single mode, we're done
+
+                                // Move to next column
+                                it.row = 0;
+                                it.col += 1;
+                                if (it.col >= it.array.width) return null;
+                            }
+
+                            const ptr = &it.array.items[it.row][it.col];
+                            const result = .{ .ptr = ptr, .x = it.col, .y = it.row };
+                            it.row += 1;
+                            return result;
+                        },
+                    }
                 }
             };
         }
 
+        // Define concrete iterator types
+        pub const Iterator = _BasicIterGen(false);
+        pub const ConstIterator = _BasicIterGen(true);
+        pub const PosIterator = _PosIterGen(false);
+        pub const ConstPosIterator = _PosIterGen(true);
+
+        // Helper functions to get the right iterator type
         fn _getIterType(comptime PtrSelf: type) type {
             const is_const = @typeInfo(PtrSelf).pointer.is_const;
             return if (is_const) ConstIterator else Iterator;
         }
 
-        pub const Iterator = _iterGen(false);
-        pub const ConstIterator = _iterGen(true);
+        fn _getPosIterType(comptime PtrSelf: type) type {
+            const is_const = @typeInfo(PtrSelf).pointer.is_const;
+            return if (is_const) ConstPosIterator else PosIterator;
+        }
 
+        // Iterator Options, Defaults to flat iterator, with no position context
+        const defaultIterOptions = struct {
+            mode: IterMode = IterMode.Flat,
+            start_pos: struct { row: usize = 0, col: usize = 0 },
+            single: bool = false,
+            include_pos: bool = false,
+        };
+
+        // Unified iterator creation function with optional parameters for flexible control
+        pub fn iteratorEx(self: anytype, options: defaultIterOptions) if (options.include_pos) _getPosIterType(@TypeOf(self)) else _getIterType(@TypeOf(self)) {
+            const start = options.start_pos;
+            var mode = options.mode;
+            var single = options.single;
+
+            if (mode == .Flat) {
+                if (single) {
+                    std.debug.print("Warn: Single Mode and Flat iterator redundant\n", .{});
+                    std.debug.print("Disableing Single Mode\n", .{});
+                    single = false;
+                }
+
+                if (options.include_pos) {
+                    std.debug.print("Warn: Flat iterator incompatable with position iterator\n", .{});
+                    std.debug.print("Swaping to Row mode\n", .{});
+                    mode = .Row;
+                }
+
+                if (start.col != 0 or start.row != 0) {
+                    std.debug.print("Warn: Flat iterator incompatable with position offset\n", .{});
+                    std.debug.print("Iteration will start at first item\n", .{});
+                    start = .{ .col = 0, .row = 0 };
+                }
+            }
+
+            if (options.include_pos) {
+                const IterType = _getPosIterType(@TypeOf(self));
+                return IterType{ .array = self, .mode = mode, .row = start.row, .col = start.col, .single = single };
+            } else {
+                const IterType = _getIterType(@TypeOf(self));
+                return IterType{ .array = self, .mode = mode, .row = start.row, .col = start.col, .single = single };
+            }
+        }
+        // Convenience wrapper functions for common iteration patterns
         pub fn iterator(self: anytype) _getIterType(@TypeOf(self)) {
-            return .{ .array = self, .index = 0 };
+            return iteratorEx(self, .{});
+        }
+
+        pub fn posIterator(self: anytype) _getPosIterType(@TypeOf(self)) {
+            return iteratorEx(self, .{ .mode = .Row, .include_pos = true });
         }
 
         // ----------- Serilization / Deserialization ------------------------
         // :TODO add tests
-            
-        // Format: File magic 4 bytes, File_Version 1 byte | usize (u8 little endian) | Width (usize little endian) | Height (usize little endian) | data (T) 
+
+        // Format: File magic 4 bytes, File_Version 1 byte | usize (u8 little endian) | Width (usize little endian) | Height (usize little endian) | data (T)
         pub fn save(self: *const Self, writer: anytype) !void {
             // 1. Write File magic number
             try writer.writeAll(FILE_MAGIC);
 
             // 2. Write Version
             try writer.writeByte(FILE_VERSION);
-            
+
             // 3. Write system spec
             const spec: u8 = @sizeOf(usize);
             try writer.writeInt(u8, spec, std.builtin.Endian.little);
@@ -553,7 +729,6 @@ test "Array2D eql" {
     try std.testing.expect(arr_empty1.eql(&arr_empty2)); // Same empty shape
     try std.testing.expect(!arr_empty1.eql(&arr_empty3)); // Different empty shape
 }
-
 test "Array2D Manipulation" {
     const allocator = std.testing.allocator;
     const I32Array = Array2D(i32);
