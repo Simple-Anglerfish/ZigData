@@ -26,6 +26,7 @@ pub fn Array2D(comptime T: type) type {
             OutOfBounds, // copy window to large
             IOError,
             InvalidFileFormat,
+            DimensionMismatch,
         };
 
         const FILE_MAGIC = "A2D";
@@ -88,6 +89,17 @@ pub fn Array2D(comptime T: type) type {
             self._deallocInternal();
             // Prevent use-after-free bugs in debug/safe modes by making the struct's state invalid.
             self.* = undefined;
+        }
+
+        pub fn debugPrint(self: *const Self, comptime fmt: []const u8) void {
+            std.debug.print("Array2D({d}x{d}):\n", .{ self.width, self.height });
+            for (0..self.height) |y| {
+                std.debug.print("  ", .{});
+                for (0..self.width) |x| {
+                    std.debug.print(fmt ++ " ", .{self.items[y][x]});
+                }
+                std.debug.print("\n", .{});
+            }
         }
 
         // -------- Data Access --------
@@ -238,7 +250,7 @@ pub fn Array2D(comptime T: type) type {
         }
 
         // Same as transform but returns new array
-        pub fn TransformToNew(self: *const Self, allocator: Allocator, comptime func: fn (T) T) !Self {
+        pub fn transformToNew(self: *const Self, allocator: Allocator, comptime func: fn (T) T) !Self {
             var result = try Self.init(allocator, self.width, self.height);
             errdefer result.deinit();
 
@@ -259,6 +271,22 @@ pub fn Array2D(comptime T: type) type {
                 }
             }
             return null;
+        }
+
+        // Perform element-wise operation between two arrays
+        pub fn combine(self: *const Self, other: *const Self, comptime op: fn (T, T) T, allocator: Allocator) !Self {
+            if (self.width != other.width or self.height != other.height) {
+                return Error.DimensionMismatch;
+            }
+
+            var result = try Self.init(allocator, self.width, self.height);
+            errdefer result.deinit();
+
+            for (0..self.data.len) |i| {
+                result.data[i] = op(self.data[i], other.data[i]);
+            }
+
+            return result;
         }
 
         //---------- Array Manipulation ------------
@@ -344,13 +372,6 @@ pub fn Array2D(comptime T: type) type {
         }
 
         //---------- Iterators ---------
-
-        // Define iteration modes
-        const IterMode = enum {
-            Flat, // Simple flat iteration through all elements
-            Row, // Iterate through elements row by row
-            Column, // Iterate through elements column by column
-        };
 
         // Basic iterator (returns pointers to elements)
         fn _BasicIterGen(comptime is_const: bool) type {
@@ -482,7 +503,6 @@ pub fn Array2D(comptime T: type) type {
             };
         }
 
-        // Define concrete iterator types
         pub const Iterator = _BasicIterGen(false);
         pub const ConstIterator = _BasicIterGen(true);
         pub const PosIterator = _PosIterGen(false);
@@ -493,13 +513,24 @@ pub fn Array2D(comptime T: type) type {
             const is_const = @typeInfo(PtrSelf).pointer.is_const;
             return if (is_const) ConstIterator else Iterator;
         }
-
         fn _getPosIterType(comptime PtrSelf: type) type {
             const is_const = @typeInfo(PtrSelf).pointer.is_const;
             return if (is_const) ConstPosIterator else PosIterator;
         }
 
-        // Iterator Options, Defaults to flat iterator, with no position context
+        // Define iteration modes
+        const IterMode = enum {
+            Flat, // Simple flat iteration through all elements
+            Row, // Iterate through elements row by row
+            Column, // Iterate through elements column by column
+        };
+
+        /// Options for creating custom iterators.
+        ///
+        /// - mode: Iteration strategy (Flat, Row, or Column)
+        /// - start_pos: Starting position for iteration
+        /// - single: If true, only iterate one row/column
+        /// - include_pos: If true, iterator returns position information
         const defaultIterOptions = struct {
             mode: IterMode = IterMode.Flat,
             start_pos: struct { row: usize = 0, col: usize = 0 },
@@ -507,25 +538,31 @@ pub fn Array2D(comptime T: type) type {
             include_pos: bool = false,
         };
 
-        // Unified iterator creation function with optional parameters for flexible control
+        /// Unified iterator creation function with optional parameters
+        /// Creates an iterator that will work with both const Array2d and Array2d data
+        /// - note on use: flat mode iterates over the flat map
+        ///     1. it is with returning position data => will default to Row mode
+        ///     2. it will ignore position offsets or single line options => disables them internally
+        ///     ^ order will affect behavior if multiple setting are wrong
+        ///
         pub fn iteratorEx(self: anytype, options: defaultIterOptions) if (options.include_pos) _getPosIterType(@TypeOf(self)) else _getIterType(@TypeOf(self)) {
             const start = options.start_pos;
             var mode = options.mode;
             var single = options.single;
 
             if (mode == .Flat) {
-                if (single) {
-                    // not really needed but consistant
-                    std.debug.print("Warn: Single Mode and Flat iterator redundant\n", .{});
-                    std.debug.print("Disabling Single Mode\n", .{});
-                    single = false;
-                }
-
                 if (options.include_pos) {
                     // will crash if not corrected
                     std.debug.print("Warn: Flat iterator incompatable with position iterator\n", .{});
                     std.debug.print("Swaping to Row mode\n", .{});
                     mode = .Row;
+                }
+
+                if (single) {
+                    // not really needed but consistant
+                    std.debug.print("Warn: Single Mode and Flat iterator redundant\n", .{});
+                    std.debug.print("Disabling Single Mode\n", .{});
+                    single = false;
                 }
 
                 if (start.col != 0 or start.row != 0) {
@@ -544,11 +581,19 @@ pub fn Array2D(comptime T: type) type {
                 return IterType{ .array = self, .mode = mode, .row = start.row, .col = start.col, .single = single };
             }
         }
-        // Convenience wrapper functions for common iteration patterns
+
+        /// Creates an iterator over the array elements.
+        /// By default, returns a flat iterator that traverses all elements sequentially.
+        ///
+        /// For more control, use `iteratorEx` with custom options.
         pub fn iterator(self: anytype) _getIterType(@TypeOf(self)) {
             return iteratorEx(self, .{});
         }
 
+        /// Creates a position-tracking iterator over the array elements.
+        /// Returns both the element pointer and its (x,y) coordinates.
+        ///
+        /// Iterates in row-major order (row by row).
         pub fn posIterator(self: anytype) _getPosIterType(@TypeOf(self)) {
             return iteratorEx(self, .{ .mode = .Row, .include_pos = true });
         }
@@ -556,7 +601,15 @@ pub fn Array2D(comptime T: type) type {
         // ----------- Serilization / Deserialization ------------------------
         // :TODO add tests
 
-        // Format: File magic 4 bytes, File_Version 1 byte | usize (u8 little endian) | Width (usize little endian) | Height (usize little endian) | data (T)
+        /// Saves the array to a binary format.
+        ///
+        /// Format specification:
+        /// - 3 bytes: "A2D" magic number
+        /// - 1 byte: File version (currently 1)
+        /// - 1 byte: Size of usize on the system that created the file
+        /// - usize: Width (little endian)
+        /// - usize: Height (little endian)
+        /// - Raw data bytes (width * height * sizeof(T))
         pub fn save(self: *const Self, writer: anytype) !void {
             // 1. Write File magic number
             try writer.writeAll(FILE_MAGIC);
