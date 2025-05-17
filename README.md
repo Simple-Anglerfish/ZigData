@@ -22,11 +22,8 @@ A generic, resizable 2D array library for Zig, backed by a single contiguous mem
 
 ## Status
 
-This project is in early development.
+This project is in early development and subject to change.
 
-## Licence
-
-Array Fish is 
 
 
 
